@@ -1,20 +1,32 @@
-// IconReaper — своя анимация удаления приложений (чёрная дыра)
+// IconReaper v6 — своя анимация удаления приложений (чёрная дыра)
+//
+// Что происходит:
+//  1. Нажимаешь "Удалить" в окне подтверждения -> стол плавно гаснет.
+//  2. Иконка ползёт в центр и немного растёт.
+//  3. Чёрная дыра: иконка крутится и затягивается.
+//  4. Приложение удаляется (пока экран тёмный).
+//  5. Стол медленно возвращается.
+//
+// Крестик и окно "Удалить?" не трогаем — они работают как обычно.
 
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
-#import <objc/runtime.h>
 
-// ============ НАСТРОЙКИ ============
-static const CGFloat        kIconScale = 1.8;
-static const NSTimeInterval kFadeOut   = 0.9;
-static const NSTimeInterval kCrawl     = 1.3;
-static const NSTimeInterval kDeleteAt  = 1.0;
-static const NSTimeInterval kEffect    = 1.5;
-static const NSTimeInterval kFadeIn    = 1.8;
-// ====================================
+// ============ НАСТРОЙКИ (можно менять числа) ============
+static const CGFloat        kIconScale = 1.8;  // во сколько раз растёт иконка
+static const NSTimeInterval kFadeOut   = 0.9;  // сколько секунд стол гаснет
+static const NSTimeInterval kCrawl     = 1.3;  // сколько секунд иконка ползёт в центр
+static const NSTimeInterval kDeleteAt  = 1.0;  // через сколько секунд реально удалять (>= kFadeOut)
+static const NSTimeInterval kEffect    = 1.5;  // сколько секунд длится чёрная дыра
+static const NSTimeInterval kFadeIn    = 1.8;  // сколько секунд стол возвращается
+// ========================================================
 
+// --- Минимальные описания приватных классов SpringBoard ---
 @interface SBIcon : NSObject
 - (UIImage *)generateIconImage:(int)format;
+@end
+
+@interface SBLeafIcon : SBIcon
 @end
 
 @interface SBIconView : UIView
@@ -26,13 +38,11 @@ static const NSTimeInterval kFadeIn    = 1.8;
 - (SBIconView *)mappedIconViewForIcon:(SBIcon *)icon;
 @end
 
-@interface SBIconController : NSObject
-- (void)uninstallIcon:(SBIcon *)icon animate:(BOOL)animate;
-@end
+static UIWindow *gWindow = nil;   // окно с эффектом
+static BOOL gBusy = NO;           // эффект сейчас идёт
+static BOOL gPassThrough = NO;    // после нашего удаления все вызовы идут как обычно
 
-static UIWindow *gWindow = nil;
-static BOOL gBusy = NO;
-
+// --- Журнал: /var/mobile/iconreaper.log (открыть через Filza) ---
 static void IRLog(NSString *msg) {
     NSLog(@"[IconReaper] %@", msg);
     NSString *path = @"/var/mobile/iconreaper.log";
@@ -55,6 +65,14 @@ static UIImage *IRSnapshotOfView(UIView *v) {
     return img;
 }
 
+static void IRCleanup(UIWindow *win) {
+    win.hidden = YES;
+    gWindow = nil;
+    gBusy = NO;
+    gPassThrough = NO;
+}
+
+// --- Сам эффект: чёрная дыра ---
 static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBlock)(void)) {
     CGRect screen = [UIScreen mainScreen].bounds;
     CGPoint center = CGPointMake(CGRectGetMidX(screen), CGRectGetMidY(screen));
@@ -70,11 +88,22 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
     gWindow = win;
     UIView *root = vc.view;
 
+    // Аварийная очистка, если что-то пошло не так и эффект завис
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (gWindow == win) {
+            IRCleanup(win);
+            IRLog(@"аварийная очистка окна эффекта");
+        }
+    });
+
+    // Чёрная пелена
     UIView *dim = [[UIView alloc] initWithFrame:screen];
     dim.backgroundColor = [UIColor blackColor];
     dim.alpha = 0;
     [root addSubview:dim];
 
+    // Чёрная дыра: ядро со свечением и три вращающихся кольца
     UIView *hole = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 260, 260)];
     hole.center = center;
     hole.alpha = 0;
@@ -110,6 +139,7 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
     core.layer.shadowOffset = CGSizeZero;
     [hole addSubview:core];
 
+    // Иконка: holder двигается и растёт, icon внутри крутится
     UIView *holder = [[UIView alloc] initWithFrame:startFrame];
     UIImageView *icon = [[UIImageView alloc] initWithImage:image];
     icon.contentMode = UIViewContentModeScaleAspectFit;
@@ -117,10 +147,12 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
     [holder addSubview:icon];
     [root addSubview:holder];
 
+    // ---- Шаг 1: стол гаснет, иконка ползёт в центр и растёт ----
     [UIView animateWithDuration:kFadeOut animations:^{
         dim.alpha = 1.0;
     }];
 
+    // ---- Настоящее удаление, когда экран уже тёмный ----
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kDeleteAt * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (deleteBlock) deleteBlock();
@@ -133,6 +165,7 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
         holder.transform = CGAffineTransformMakeScale(kIconScale, kIconScale);
     } completion:^(BOOL finished) {
 
+        // ---- Шаг 2: чёрная дыра, иконка закручивается ----
         [UIView animateWithDuration:0.5 animations:^{
             hole.alpha = 1.0;
             hole.transform = CGAffineTransformIdentity;
@@ -158,6 +191,7 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
         group.removedOnCompletion = NO;
         [icon.layer addAnimation:group forKey:@"blackhole"];
 
+        // ---- Шаг 3: дыра схлопывается, стол медленно возвращается ----
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.4 + kEffect) * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             icon.hidden = YES;
@@ -170,9 +204,7 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
                     [UIView animateWithDuration:kFadeIn animations:^{
                         dim.alpha = 0;
                     } completion:^(BOOL f3) {
-                        win.hidden = YES;
-                        gWindow = nil;
-                        gBusy = NO;
+                        IRCleanup(win);
                         IRLog(@"эффект закончен");
                     }];
                 });
@@ -181,6 +213,7 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
     }];
 }
 
+// --- Подготовка и запуск эффекта. YES = эффект запущен, удаление отложено ---
 static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
     if (gBusy || icon == nil) return NO;
 
@@ -193,7 +226,7 @@ static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
         }
     }
     if (iconView == nil || iconView.window == nil) {
-        IRLog(@"не нашёл вьюху иконки на экране — без эффекта");
+        IRLog(@"не нашёл вьюху иконки на экране — удаляю без эффекта");
         return NO;
     }
 
@@ -211,7 +244,7 @@ static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
         img = IRSnapshotOfView(imgView);
     }
     if (img == nil) {
-        IRLog(@"не получилось взять картинку иконки — без эффекта");
+        IRLog(@"не получилось взять картинку иконки — удаляю без эффекта");
         return NO;
     }
 
@@ -224,54 +257,60 @@ static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
 
     IRLog(@"запускаю эффект чёрной дыры");
     gBusy = YES;
-    IRPlayBlackHole(img, frame, deleteBlock);
+
+    // Когда придёт время удалять: включаем "пропуск", чтобы цепочка вызовов
+    // шла как обычно, и вызываем настоящее удаление
+    void (^wrapped)(void) = ^{
+        IRLog(@"удаляю приложение (экран уже тёмный)");
+        gPassThrough = YES;
+        if (deleteBlock) deleteBlock();
+    };
+    IRPlayBlackHole(img, frame, wrapped);
     return YES;
 }
 
+// ====== Перехват удаления. Первым сработает тот метод, который реально вызывается ======
+
 %hook SBIconController
 
-// ГЛАВНЫЙ ХУК: перехватываем нажатие на крестик
-- (void)iconCloseBoxTapped:(id)iconView {
-    IRLog(@"=== iconCloseBoxTapped вызван ===");
-    
-    // Получаем иконку из вьюхи
-    SBIcon *icon = nil;
-    if ([iconView respondsToSelector:@selector(icon)]) {
-        icon = [iconView performSelector:@selector(icon)];
-    }
-    
-    if (icon == nil) {
-        IRLog(@"не получилось получить иконку из вьюхи");
-        %orig;
-        return;
-    }
-    
-    // Запускаем эффект с отложенным удалением
+- (void)uninstallIcon:(SBIcon *)icon animate:(BOOL)animate completion:(id)completion {
+    IRLog(@"вызван uninstallIcon:animate:completion:");
+    if (gPassThrough) { %orig; return; }
+    id completionCopy = [completion copy];
     BOOL started = IRStartEffect(icon, ^{
-        IRLog(@"удаляю приложение после анимации");
-        // Вызываем оригинальный метод удаления
-        [self uninstallIcon:icon animate:NO];
+        %orig(icon, NO, completionCopy);
     });
-    
-    if (!started) {
-        IRLog(@"эффект не запустился, удаляем стандартно");
-        %orig;
-    }
+    if (!started) { %orig; }
 }
 
-// На случай если вызывается напрямую
 - (void)uninstallIcon:(SBIcon *)icon animate:(BOOL)animate {
-    IRLog([NSString stringWithFormat:@"вызван uninstallIcon:animate: (занято: %d)", gBusy]);
-    
-    if (gBusy) {
-        // Мы уже внутри эффекта, просто удаляем
-        %orig(icon, NO);
-        return;
-    }
-    
+    IRLog(@"вызван uninstallIcon:animate:");
+    if (gPassThrough) { %orig; return; }
     BOOL started = IRStartEffect(icon, ^{
-        IRLog(@"удаляю приложение (экран уже тёмный)");
         %orig(icon, NO);
+    });
+    if (!started) { %orig; }
+}
+
+- (void)uninstallIcon:(SBIcon *)icon {
+    IRLog(@"вызван uninstallIcon:");
+    if (gPassThrough) { %orig; return; }
+    BOOL started = IRStartEffect(icon, ^{
+        %orig(icon);
+    });
+    if (!started) { %orig; }
+}
+
+%end
+
+// Запасной вариант: самый последний шаг удаления приложения
+%hook SBLeafIcon
+
+- (void)completeUninstall {
+    IRLog(@"вызван SBLeafIcon completeUninstall");
+    if (gPassThrough) { %orig; return; }
+    BOOL started = IRStartEffect((SBIcon *)self, ^{
+        %orig;
     });
     if (!started) { %orig; }
 }
@@ -279,6 +318,6 @@ static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
 %end
 
 %ctor {
-    IRLog(@"=== IconReaper v4 загружен ===");
+    IRLog(@"=== IconReaper v6 загружен ===");
     %init;
 }
