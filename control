@@ -1,6 +1,6 @@
 Package: com.user.iconreaper
 Name: IconReaper
-Version: 0.1.0
+Version: 0.2.1
 Architecture: iphoneos-arm
 Description: Custom app deletion animations (black hole first)
 Maintainer: ZeusMaster150
