@@ -2,6 +2,7 @@
 
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
 
 // ============ НАСТРОЙКИ (можно менять числа) ============
 static const CGFloat        kIconScale = 1.8;  // во сколько раз растёт иконка
