@@ -1,17 +1,17 @@
-// IconReaper — своя анимация удаления приложений (первый эффект: чёрная дыра)
+// IconReaper — своя анимация удаления приложений (чёрная дыра)
 
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
-// ============ НАСТРОЙКИ (можно менять числа) ============
-static const CGFloat        kIconScale = 1.8;  // во сколько раз растёт иконка
-static const NSTimeInterval kFadeOut   = 0.9;  // сколько секунд стол гаснет
-static const NSTimeInterval kCrawl     = 1.3;  // сколько секунд иконка ползёт в центр
-static const NSTimeInterval kDeleteAt  = 1.0;  // через сколько секунд реально удалять (>= kFadeOut)
-static const NSTimeInterval kEffect    = 1.5;  // сколько секунд длится чёрная дыра
-static const NSTimeInterval kFadeIn    = 1.8;  // сколько секунд стол возвращается
-// ========================================================
+// ============ НАСТРОЙКИ ============
+static const CGFloat        kIconScale = 1.8;
+static const NSTimeInterval kFadeOut   = 0.9;
+static const NSTimeInterval kCrawl     = 1.3;
+static const NSTimeInterval kDeleteAt  = 1.0;
+static const NSTimeInterval kEffect    = 1.5;
+static const NSTimeInterval kFadeIn    = 1.8;
+// ====================================
 
 @interface SBIcon : NSObject
 - (UIImage *)generateIconImage:(int)format;
@@ -230,17 +230,45 @@ static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
 
 %hook SBIconController
 
-- (void)uninstallIcon:(SBIcon *)icon animate:(BOOL)animate completion:(id)completion {
-    IRLog([NSString stringWithFormat:@"вызван uninstallIcon:animate:completion: (занято: %d)", gBusy]);
+// ГЛАВНЫЙ ХУК: перехватываем нажатие на крестик
+- (void)iconCloseBoxTapped:(id)iconView {
+    IRLog(@"=== iconCloseBoxTapped вызван ===");
+    
+    // Получаем иконку из вьюхи
+    SBIcon *icon = nil;
+    if ([iconView respondsToSelector:@selector(icon)]) {
+        icon = [iconView performSelector:@selector(icon)];
+    }
+    
+    if (icon == nil) {
+        IRLog(@"не получилось получить иконку из вьюхи");
+        %orig;
+        return;
+    }
+    
+    // Запускаем эффект с отложенным удалением
     BOOL started = IRStartEffect(icon, ^{
-        IRLog(@"удаляю приложение (экран уже тёмный)");
-        %orig(icon, NO, completion);
+        IRLog(@"удаляю приложение после анимации");
+        // Вызываем оригинальный метод удаления
+        [self uninstallIcon:icon animate:NO];
     });
-    if (!started) { %orig; }
+    
+    if (!started) {
+        IRLog(@"эффект не запустился, удаляем стандартно");
+        %orig;
+    }
 }
 
+// На случай если вызывается напрямую
 - (void)uninstallIcon:(SBIcon *)icon animate:(BOOL)animate {
     IRLog([NSString stringWithFormat:@"вызван uninstallIcon:animate: (занято: %d)", gBusy]);
+    
+    if (gBusy) {
+        // Мы уже внутри эффекта, просто удаляем
+        %orig(icon, NO);
+        return;
+    }
+    
     BOOL started = IRStartEffect(icon, ^{
         IRLog(@"удаляю приложение (экран уже тёмный)");
         %orig(icon, NO);
@@ -248,50 +276,9 @@ static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
     if (!started) { %orig; }
 }
 
-- (void)uninstallIcon:(SBIcon *)icon {
-    IRLog([NSString stringWithFormat:@"вызван uninstallIcon: (занято: %d)", gBusy]);
-    BOOL started = IRStartEffect(icon, ^{
-        IRLog(@"удаляю приложение (экран уже тёмный)");
-        %orig(icon);
-    });
-    if (!started) { %orig; }
-}
-
-- (void)iconCloseBoxTapped:(id)iconView {
-    IRLog(@"нажат крестик на иконке");
-    %orig;
-}
-
 %end
 
 %ctor {
-    IRLog(@"=== v3 загружен ===");
-    %init;
-}
-%end
-
-%ctor {
-    IRLog(@"=== диагностика v2 ===");
-    NSArray *classes = @[@"SBIconController", @"SBApplicationIcon", @"SBLeafIcon", @"SBIcon", @"SBIconView", @"SBIconModel"];
-    NSArray *words = @[@"ninstall", @"elete", @"loseBox", @"emoveIcon", @"emoveApp"];
-    for (NSString *cn in classes) {
-        Class c = NSClassFromString(cn);
-        if (!c) {
-            IRLog([NSString stringWithFormat:@"класс %@ НЕ найден", cn]);
-            continue;
-        }
-        unsigned int n = 0;
-        Method *list = class_copyMethodList(c, &n);
-        for (unsigned int i = 0; i < n; i++) {
-            NSString *name = NSStringFromSelector(method_getName(list[i]));
-            for (NSString *w in words) {
-                if ([name containsString:w]) {
-                    IRLog([NSString stringWithFormat:@"%@  %@  %s", cn, name, method_getTypeEncoding(list[i])]);
-                    break;
-                }
-            }
-        }
-        free(list);
-    }
+    IRLog(@"=== IconReaper v4 загружен ===");
     %init;
 }
