@@ -181,15 +181,8 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
     }];
 }
 
-%hook SBIconController
-
-- (void)uninstallIcon:(SBIcon *)icon animate:(BOOL)animate {
-    IRLog(@"вызван uninstallIcon:animate:");
-
-    if (gBusy || icon == nil) {
-        %orig;
-        return;
-    }
+static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
+    if (gBusy || icon == nil) return NO;
 
     SBIconView *iconView = nil;
     Class mapClass = NSClassFromString(@"SBIconViewMap");
@@ -200,9 +193,8 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
         }
     }
     if (iconView == nil || iconView.window == nil) {
-        IRLog(@"не нашёл вьюху иконки на экране — удаляю без эффекта");
-        %orig;
-        return;
+        IRLog(@"не нашёл вьюху иконки на экране — без эффекта");
+        return NO;
     }
 
     UIView *imgView = nil;
@@ -219,9 +211,8 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
         img = IRSnapshotOfView(imgView);
     }
     if (img == nil) {
-        IRLog(@"не получилось взять картинку иконки — удаляю без эффекта");
-        %orig;
-        return;
+        IRLog(@"не получилось взять картинку иконки — без эффекта");
+        return NO;
     }
 
     CGSize size = imgView ? imgView.bounds.size : img.size;
@@ -233,12 +224,50 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
 
     IRLog(@"запускаю эффект чёрной дыры");
     gBusy = YES;
-    IRPlayBlackHole(img, frame, ^{
+    IRPlayBlackHole(img, frame, deleteBlock);
+    return YES;
+}
+
+%hook SBIconController
+
+- (void)uninstallIcon:(SBIcon *)icon animate:(BOOL)animate completion:(id)completion {
+    IRLog([NSString stringWithFormat:@"вызван uninstallIcon:animate:completion: (занято: %d)", gBusy]);
+    BOOL started = IRStartEffect(icon, ^{
+        IRLog(@"удаляю приложение (экран уже тёмный)");
+        %orig(icon, NO, completion);
+    });
+    if (!started) { %orig; }
+}
+
+- (void)uninstallIcon:(SBIcon *)icon animate:(BOOL)animate {
+    IRLog([NSString stringWithFormat:@"вызван uninstallIcon:animate: (занято: %d)", gBusy]);
+    BOOL started = IRStartEffect(icon, ^{
         IRLog(@"удаляю приложение (экран уже тёмный)");
         %orig(icon, NO);
     });
+    if (!started) { %orig; }
 }
 
+- (void)uninstallIcon:(SBIcon *)icon {
+    IRLog([NSString stringWithFormat:@"вызван uninstallIcon: (занято: %d)", gBusy]);
+    BOOL started = IRStartEffect(icon, ^{
+        IRLog(@"удаляю приложение (экран уже тёмный)");
+        %orig(icon);
+    });
+    if (!started) { %orig; }
+}
+
+- (void)iconCloseBoxTapped:(id)iconView {
+    IRLog(@"нажат крестик на иконке");
+    %orig;
+}
+
+%end
+
+%ctor {
+    IRLog(@"=== v3 загружен ===");
+    %init;
+}
 %end
 
 %ctor {
