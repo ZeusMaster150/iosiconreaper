@@ -242,10 +242,27 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
 %end
 
 %ctor {
-    IRLog(@"твик загружен в SpringBoard");
-    Class c = NSClassFromString(@"SBIconController");
-    BOOL has = [c instancesRespondToSelector:@selector(uninstallIcon:animate:)];
-    IRLog([NSString stringWithFormat:@"SBIconController: %@, метод uninstallIcon:animate: %@",
-           c ? @"найден" : @"НЕ найден", has ? @"есть" : @"НЕТ"]);
+    IRLog(@"=== диагностика v2 ===");
+    NSArray *classes = @[@"SBIconController", @"SBApplicationIcon", @"SBLeafIcon", @"SBIcon", @"SBIconView", @"SBIconModel"];
+    NSArray *words = @[@"ninstall", @"elete", @"loseBox", @"emoveIcon", @"emoveApp"];
+    for (NSString *cn in classes) {
+        Class c = NSClassFromString(cn);
+        if (!c) {
+            IRLog([NSString stringWithFormat:@"класс %@ НЕ найден", cn]);
+            continue;
+        }
+        unsigned int n = 0;
+        Method *list = class_copyMethodList(c, &n);
+        for (unsigned int i = 0; i < n; i++) {
+            NSString *name = NSStringFromSelector(method_getName(list[i]));
+            for (NSString *w in words) {
+                if ([name containsString:w]) {
+                    IRLog([NSString stringWithFormat:@"%@  %@  %s", cn, name, method_getTypeEncoding(list[i])]);
+                    break;
+                }
+            }
+        }
+        free(list);
+    }
     %init;
 }
