@@ -1,4 +1,4 @@
-// IconReaper v6 — своя анимация удаления приложений (чёрная дыра)
+// IconReaper v7 — своя анимация удаления приложений (чёрная дыра)
 //
 // Что происходит:
 //  1. Нажимаешь "Удалить" в окне подтверждения -> стол плавно гаснет.
@@ -24,6 +24,7 @@ static const NSTimeInterval kFadeIn    = 1.8;  // сколько секунд с
 // --- Минимальные описания приватных классов SpringBoard ---
 @interface SBIcon : NSObject
 - (UIImage *)generateIconImage:(int)format;
+- (NSString *)nodeIdentifier;
 @end
 
 @interface SBLeafIcon : SBIcon
@@ -31,11 +32,21 @@ static const NSTimeInterval kFadeIn    = 1.8;  // сколько секунд с
 
 @interface SBIconView : UIView
 - (UIView *)_iconImageView;
+- (SBIcon *)icon;
 @end
 
 @interface SBIconViewMap : NSObject
 + (instancetype)homescreenMap;
 - (SBIconView *)mappedIconViewForIcon:(SBIcon *)icon;
+@end
+
+@interface SBIconController : NSObject
++ (instancetype)sharedInstance;
+- (id)homescreenIconViewMap;
+@end
+
+@interface UIWindow (IconReaper)
++ (NSArray *)allWindowsIncludingInternalWindows:(BOOL)internal onlyVisibleWindows:(BOOL)visible;
 @end
 
 static UIWindow *gWindow = nil;   // окно с эффектом
@@ -213,20 +224,92 @@ static void IRPlayBlackHole(UIImage *image, CGRect startFrame, void (^deleteBloc
     }];
 }
 
-// --- Подготовка и запуск эффекта. YES = эффект запущен, удаление отложено ---
-static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
-    if (gBusy || icon == nil) return NO;
+// --- Поиск вьюхи иконки на экране (несколько способов) ---
+static BOOL IRSameIcon(SBIcon *a, SBIcon *b) {
+    if (a == nil || b == nil) return NO;
+    if (a == b) return YES;
+    if ([a respondsToSelector:@selector(nodeIdentifier)] &&
+        [b respondsToSelector:@selector(nodeIdentifier)]) {
+        NSString *x = [a nodeIdentifier];
+        NSString *y = [b nodeIdentifier];
+        if ([x isKindOfClass:[NSString class]] && [y isKindOfClass:[NSString class]] &&
+            [x isEqualToString:y]) return YES;
+    }
+    return NO;
+}
 
-    SBIconView *iconView = nil;
+static SBIconView *IRWalk(UIView *v, SBIcon *icon, Class iconViewClass, int *visited) {
+    if ([v isKindOfClass:iconViewClass]) {
+        (*visited)++;
+        SBIconView *iv = (SBIconView *)v;
+        if ([iv respondsToSelector:@selector(icon)] && IRSameIcon([iv icon], icon)) return iv;
+    }
+    for (UIView *sub in v.subviews) {
+        SBIconView *found = IRWalk(sub, icon, iconViewClass, visited);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static SBIconView *IRFindIconView(SBIcon *icon) {
+    // Способ 1: карта вьюх иконок у SBIconController
+    Class ctrlClass = NSClassFromString(@"SBIconController");
+    if ([ctrlClass respondsToSelector:@selector(sharedInstance)]) {
+        SBIconController *ctrl = [ctrlClass sharedInstance];
+        if ([ctrl respondsToSelector:@selector(homescreenIconViewMap)]) {
+            id map = [ctrl homescreenIconViewMap];
+            if ([map respondsToSelector:@selector(mappedIconViewForIcon:)]) {
+                SBIconView *v = [map mappedIconViewForIcon:icon];
+                if (v) { IRLog(@"иконка найдена: способ 1 (homescreenIconViewMap)"); return v; }
+            }
+        }
+    }
+
+    // Способ 2: старая карта SBIconViewMap
     Class mapClass = NSClassFromString(@"SBIconViewMap");
     if ([mapClass respondsToSelector:@selector(homescreenMap)]) {
         SBIconViewMap *map = [mapClass homescreenMap];
         if ([map respondsToSelector:@selector(mappedIconViewForIcon:)]) {
-            iconView = [map mappedIconViewForIcon:icon];
+            SBIconView *v = [map mappedIconViewForIcon:icon];
+            if (v) { IRLog(@"иконка найдена: способ 2 (SBIconViewMap)"); return v; }
         }
     }
-    if (iconView == nil || iconView.window == nil) {
-        IRLog(@"не нашёл вьюху иконки на экране — удаляю без эффекта");
+
+    // Способ 3: обходим все вьюхи во всех окнах и ищем SBIconView с нужной иконкой
+    Class iconViewClass = NSClassFromString(@"SBIconView");
+    if (iconViewClass == nil) {
+        IRLog(@"класс SBIconView не найден");
+        return nil;
+    }
+    NSMutableArray *wins = [NSMutableArray array];
+    [wins addObjectsFromArray:[UIApplication sharedApplication].windows];
+    if ([UIWindow respondsToSelector:@selector(allWindowsIncludingInternalWindows:onlyVisibleWindows:)]) {
+        NSArray *all = [UIWindow allWindowsIncludingInternalWindows:YES onlyVisibleWindows:NO];
+        for (UIWindow *w in all) {
+            if (![wins containsObject:w]) [wins addObject:w];
+        }
+    }
+    int visited = 0;
+    for (UIWindow *w in wins) {
+        SBIconView *found = IRWalk(w, icon, iconViewClass, &visited);
+        if (found) { IRLog(@"иконка найдена: способ 3 (обход окон)"); return found; }
+    }
+    IRLog([NSString stringWithFormat:@"иконка не найдена нигде. окон: %lu, SBIconView просмотрено: %d",
+           (unsigned long)wins.count, visited]);
+    return nil;
+}
+
+// --- Подготовка и запуск эффекта. YES = эффект запущен, удаление отложено ---
+static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
+    if (gBusy || icon == nil) return NO;
+
+    SBIconView *iconView = IRFindIconView(icon);
+    if (iconView == nil) {
+        IRLog(@"не нашёл вьюху иконки — удаляю без эффекта");
+        return NO;
+    }
+    if (iconView.window == nil) {
+        IRLog(@"вьюха иконки найдена, но не на экране — удаляю без эффекта");
         return NO;
     }
 
@@ -318,6 +401,6 @@ static BOOL IRStartEffect(SBIcon *icon, void (^deleteBlock)(void)) {
 %end
 
 %ctor {
-    IRLog(@"=== IconReaper v6 загружен ===");
+    IRLog(@"=== IconReaper v7 загружен ===");
     %init;
 }
