@@ -8,6 +8,6 @@ TWEAK_NAME = IconReaper
 
 IconReaper_FILES = Tweak.xm
 IconReaper_CFLAGS = -fobjc-arc -Wno-error -Wno-deprecated-declarations -Wno-unused-variable
-IconReaper_FRAMEWORKS = UIKit QuartzCore
+IconReaper_FRAMEWORKS = UIKit QuartzCore CoreGraphics
 
 include $(THEOS_MAKE_PATH)/tweak.mk
