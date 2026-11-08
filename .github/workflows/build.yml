@@ -25,7 +25,16 @@ jobs:
           cp -R /tmp/sdks/*.sdk $HOME/theos/sdks/
 
       - name: Build
-        run: make package FINALPACKAGE=1
+        run: |
+          set -o pipefail
+          make package FINALPACKAGE=1 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
 
       - name: Upload deb
         uses: actions/upload-artifact@v4
